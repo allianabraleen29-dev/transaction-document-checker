@@ -3,3 +3,5 @@ pymupdf
 pytesseract
 pillow
 python-docx
+
+openai>=1.0.0
