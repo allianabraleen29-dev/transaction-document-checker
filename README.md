@@ -1,54 +1,30 @@
+# Document Reader & Completeness Checker
 
-# Transaction Document Checker — Web App
+A concise Streamlit web app for reading general documents and identifying the document type, detected information, missing items, and fields that need human review.
 
-This is a Streamlit web version of the desktop prototype.
+## Supported files
+- PDF
+- Word DOCX
+- PNG/JPG/JPEG/TIF/TIFF
+
+## Features
+- Automatically identifies common document types
+- Reads Word documents directly; no conversion/download required
+- OCR for scanned PDFs and images
+- Shows missing/not-detected/review items directly on the webpage
+- Conservative signature handling: a printed "Signature" label does not count as a completed signature
+- No report download is required
 
 ## Run locally
+```bash
+py -m pip install -r requirements.txt
+py -m streamlit run app.py
+```
 
-1. Install Python 3.10+.
-2. Install Tesseract OCR and keep it at:
-   `C:\Program Files\Tesseract-OCR`
-3. Open Command Prompt in this folder.
-4. Run:
+## Streamlit deployment
+Deploy `app.py` from the `main` branch of the GitHub repository.
 
-   `py -m pip install -r requirements.txt`
+## Privacy
+Files are processed in the running Streamlit session and are not intentionally saved to a database by this prototype. Do not upload confidential client documents to an unapproved deployment.
 
-5. Run:
-
-   `py -m streamlit run app.py`
-
-The app opens in your browser.
-
-## Put it online
-
-A simple option is Streamlit Community Cloud. Create a GitHub repository, upload:
-- `app.py`
-- `requirements.txt`
-
-Then deploy the repository as a Streamlit app.
-
-For real client documents, use only a deployment/storage environment approved by your brokerage/company. This prototype is intended for QA/testing and does not provide legal/compliance determinations.
-
-## Current features
-
-- Multiple PDF/image upload
-- OCR for scanned PDFs/images
-- Real-estate transaction document checklist
-- Buyer/seller/property-address exact text checks
-- Required document detection based on filename
-- Name/address/date/signature/initials field screening
-- CSV QA report
-- Missing/review status
-
-## Recommended production upgrades
-
-- Secure login and role-based access
-- Encrypted temporary storage
-- Automatic deletion/retention controls
-- Document-type classification using document content, not just filenames
-- Better signature/initial detection
-- Cross-document entity matching with OCR-tolerant normalization
-- Contract-specific deadline extraction
-- Audit trail
-- Brokerage-specific checklists
-- Secure cloud storage integration
+This tool is a document-screening aid, not a legal or compliance determination.

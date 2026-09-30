@@ -1,197 +1,258 @@
-
 import io
 import re
-from pathlib import Path
 
-import streamlit as st
 import fitz
 import pytesseract
+import streamlit as st
 from PIL import Image, ImageEnhance
+from docx import Document
 
-st.set_page_config(page_title="Transaction Document Checker", page_icon="📋", layout="wide")
+st.set_page_config(page_title="Document Reader & Completeness Checker", page_icon="📄", layout="wide")
 
-FIELD_PATTERNS = {
-    "Buyer Name": [r"\bbuyer\s+name\b", r"\bbuyer\b", r"\bpurchaser\b"],
-    "Seller Name": [r"\bseller\s+name\b", r"\bseller\b", r"\bvendor\b"],
-    "Property Address": [r"\bproperty\s+address\b", r"\bsubject\s+property\b", r"\bproperty\b", r"\bpremises\b"],
-    "Purchase Price": [r"\bpurchase\s+price\b", r"\bsales?\s+price\b", r"\bprice\b"],
-    "Contract Date": [r"\bcontract\s+date\b", r"\bexecution\s+date\b", r"\beffective\s+date\b"],
-    "Closing Date": [r"\bclosing\s+date\b", r"\bsettlement\s+date\b"],
-    "Signature": [r"\bsignature\b", r"\bsigned\s+by\b", r"\bauthorized\s+signature\b"],
-    "Initials": [r"\binitials?\b"],
+st.title("📄 Document Reader & Completeness Checker")
+st.caption("Upload a document. The app identifies the document type, reads its content, and shows missing items directly on this page.")
+
+DOC_FIELDS = {
+    "Purchase Agreement": ["Buyer Name", "Seller Name", "Property Address", "Purchase Price", "Contract Date", "Closing Date", "Signature"],
+    "Residential Lease": ["Tenant Name", "Landlord Name", "Property Address", "Lease Start Date", "Lease End Date", "Monthly Rent", "Security Deposit", "Signature"],
+    "Seller Disclosure": ["Seller Name", "Property Address", "Signature"],
+    "Lead-Based Paint Disclosure": ["Buyer Name", "Seller Name", "Property Address", "Signature"],
+    "Agency Disclosure": ["Buyer Name", "Seller Name", "Property Address", "Signature"],
+    "Inspection Report": ["Property Address", "Inspection Date"],
+    "Inspection/Repair Addendum": ["Buyer Name", "Seller Name", "Property Address", "Repair Terms", "Signature"],
+    "Appraisal": ["Property Address", "Appraisal Date", "Appraised Value"],
+    "Title Commitment": ["Property Address", "Effective Date", "Owner Name"],
+    "HOA Documents": ["Property Address", "Association Name"],
+    "Closing Disclosure": ["Buyer Name", "Seller Name", "Property Address", "Closing Date", "Loan Amount"],
+    "Invoice": ["Invoice Number", "Invoice Date", "Bill To", "Amount Due"],
+    "Authorization": ["Authorized Person", "Purpose", "Effective Date", "Signature"],
+    "Employment Document": ["Employee Name", "Employer Name", "Effective Date", "Signature"],
+    "Other": ["Name", "Address", "Date", "Signature"],
 }
 
-DEFAULT_DOCS = [
-    "Purchase Agreement",
-    "Seller Disclosure",
-    "Lead-Based Paint Disclosure",
-    "Agency Disclosure",
-    "Inspection Report",
-    "Inspection/Repair Addendum",
-    "Appraisal",
-    "Title Commitment",
-    "HOA Documents",
-    "Closing Disclosure",
+FIELD_PATTERNS = {
+    "Buyer Name": [r"\bbuyer\b", r"\bpurchaser\b"],
+    "Seller Name": [r"\bseller\b", r"\bvendor\b"],
+    "Tenant Name": [r"\btenant\b", r"\blessee\b", r"\brenter\b"],
+    "Landlord Name": [r"\blandlord\b", r"\blessor\b"],
+    "Property Address": [r"property\s+address", r"subject\s+property", r"rental\s+property", r"premises"],
+    "Purchase Price": [r"purchase\s+price", r"sales?\s+price", r"purchase\s+amount"],
+    "Contract Date": [r"contract\s+date", r"execution\s+date", r"effective\s+date"],
+    "Closing Date": [r"closing\s+date", r"settlement\s+date"],
+    "Lease Start Date": [r"lease\s+(?:start|commencement)\s+date", r"commencement\s+date", r"term\s+begins?"],
+    "Lease End Date": [r"lease\s+(?:end|expiration)\s+date", r"expiration\s+date", r"term\s+ends?"],
+    "Monthly Rent": [r"monthly\s+rent", r"rent\s+per\s+month", r"base\s+rent"],
+    "Security Deposit": [r"security\s+deposit"],
+    "Inspection Date": [r"inspection\s+date"],
+    "Repair Terms": [r"repair(?:s)?", r"repair\s+terms"],
+    "Appraisal Date": [r"appraisal\s+date", r"effective\s+date"],
+    "Appraised Value": [r"appraised\s+value", r"opinion\s+of\s+value"],
+    "Effective Date": [r"effective\s+date", r"effective\s+as\s+of"],
+    "Owner Name": [r"owner(?:'s)?\s+name", r"vested\s+owner"],
+    "Association Name": [r"association\s+name", r"homeowners?\s+association", r"hoa"],
+    "Loan Amount": [r"loan\s+amount", r"principal\s+amount"],
+    "Invoice Number": [r"invoice\s*(?:number|#)", r"invoice\s+no"],
+    "Invoice Date": [r"invoice\s+date", r"date\s+of\s+invoice"],
+    "Bill To": [r"bill\s+to", r"billed\s+to"],
+    "Amount Due": [r"amount\s+due", r"balance\s+due", r"total\s+due"],
+    "Authorized Person": [r"authorized\s+person", r"authorized\s+by"],
+    "Purpose": [r"purpose", r"reason\s+for"],
+    "Employee Name": [r"employee(?:'s)?\s+name", r"employee"],
+    "Employer Name": [r"employer(?:'s)?\s+name", r"employer"],
+    "Name": [r"\bname\b", r"full\s+name"],
+    "Address": [r"\baddress\b"],
+    "Date": [r"\bdate\b"],
+    "Signature": [r"\bsignature\b", r"signed\s+by", r"authorized\s+signature", r"electronic\s+signature"],
+}
+
+TYPE_RULES = [
+    ("Residential Lease", ["residential lease", "lease agreement", "rental agreement", "landlord", "tenant", "lessor", "lessee"]),
+    ("Purchase Agreement", ["purchase agreement", "purchase contract", "sales contract", "real estate purchase contract"]),
+    ("Seller Disclosure", ["seller disclosure", "property disclosure", "seller's disclosure"]),
+    ("Lead-Based Paint Disclosure", ["lead-based paint", "lead based paint", "lead paint disclosure"]),
+    ("Agency Disclosure", ["agency disclosure", "agency relationship", "disclosure of agency"]),
+    ("Inspection/Repair Addendum", ["repair addendum", "inspection addendum", "repair amendment"]),
+    ("Inspection Report", ["inspection report", "home inspection", "property inspection"]),
+    ("Appraisal", ["appraisal report", "appraisal", "appraised value"]),
+    ("Title Commitment", ["title commitment", "title report", "commitment for title"]),
+    ("HOA Documents", ["homeowners association", "homeowners' association", "hoa"]),
+    ("Closing Disclosure", ["closing disclosure", "closing disclosure statement", "loan estimate"]),
+    ("Invoice", ["invoice", "amount due", "bill to"]),
+    ("Authorization", ["authorization", "authorized by", "authorization form"]),
+    ("Employment Document", ["employment agreement", "offer letter", "employment contract"]),
 ]
 
-def clean(s):
-    return re.sub(r"\s+", " ", s or "").strip()
 
-def pdf_text(file_bytes):
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
+def clean(text):
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def extract_pdf(data):
+    doc = fitz.open(stream=data, filetype="pdf")
     pages = []
     for i, page in enumerate(doc):
         text = page.get_text("text") or ""
-        if len(clean(text)) < 25:
+        if len(clean(text)) < 30:
             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             img = ImageEnhance.Contrast(img).enhance(1.35)
             text = pytesseract.image_to_string(img)
-        pages.append((i + 1, text))
-    return pages
+        pages.append(text)
+    return "\n".join(pages)
 
-def image_text(file_bytes):
-    img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+
+def extract_image(data):
+    img = Image.open(io.BytesIO(data)).convert("RGB")
     img = ImageEnhance.Contrast(img).enhance(1.35)
-    return [(1, pytesseract.image_to_string(img))]
+    return pytesseract.image_to_string(img)
+
+
+def extract_docx(data):
+    doc = Document(io.BytesIO(data))
+    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            parts.append(" | ".join(cell.text for cell in row.cells))
+    return "\n".join(parts)
+
 
 def extract(uploaded):
-    b = uploaded.getvalue()
-    if uploaded.name.lower().endswith(".pdf"):
-        return pdf_text(b)
-    return image_text(b)
+    data = uploaded.getvalue()
+    name = uploaded.name.lower()
+    if name.endswith(".pdf"):
+        return extract_pdf(data)
+    if name.endswith(".docx"):
+        return extract_docx(data)
+    return extract_image(data)
 
-def field_status(text, label):
+
+def identify_type(filename, text):
+    fn = filename.lower()
     t = clean(text).lower()
-    patterns = FIELD_PATTERNS[label]
-    for p in patterns:
-        for m in re.finditer(p, t, flags=re.I):
-            tail = clean(t[m.end():m.end()+180])
-            tail = re.sub(r"^[\s:._\-–—|]+", "", tail)
-            if not tail:
-                return "MISSING"
-            if re.search(r"_{3,}", tail[:100]):
-                return "MISSING"
-            if label in ("Signature", "Initials"):
-                if len(tail) < 8 or re.match(r"^(date|name|print|initials?)\b", tail):
-                    return "REVIEW"
-                return "FOUND"
-            if len(tail) >= 2:
-                return "FOUND"
-    return "NOT FOUND"
-
-def doc_type(filename):
-    n = filename.lower()
-    rules = [
-        ("Purchase Agreement", ["purchase agreement", "sales contract", "contract"]),
-        ("Seller Disclosure", ["seller disclosure", "property disclosure"]),
-        ("Lead-Based Paint Disclosure", ["lead", "paint disclosure"]),
-        ("Agency Disclosure", ["agency disclosure", "agency"]),
-        ("Inspection Report", ["inspection report", "home inspection"]),
-        ("Inspection/Repair Addendum", ["repair addendum", "inspection addendum", "repair"]),
-        ("Appraisal", ["appraisal"]),
-        ("Title Commitment", ["title commitment", "title report"]),
-        ("HOA Documents", ["hoa", "homeowners association"]),
-        ("Closing Disclosure", ["closing disclosure", "cd"]),
-    ]
-    for label, keys in rules:
-        if any(k in n for k in keys):
+    # Strong filename matches first.
+    filename_keys = {
+        "Residential Lease": ["lease", "rental"],
+        "Purchase Agreement": ["purchase agreement", "purchase contract", "sales contract"],
+        "Seller Disclosure": ["seller disclosure", "property disclosure"],
+        "Lead-Based Paint Disclosure": ["lead", "paint disclosure"],
+        "Agency Disclosure": ["agency disclosure"],
+        "Inspection/Repair Addendum": ["repair addendum", "inspection addendum"],
+        "Inspection Report": ["inspection report", "home inspection"],
+        "Appraisal": ["appraisal"],
+        "Title Commitment": ["title commitment", "title report"],
+        "HOA Documents": ["hoa", "homeowners association"],
+        "Closing Disclosure": ["closing disclosure"],
+        "Invoice": ["invoice"],
+        "Authorization": ["authorization"],
+        "Employment Document": ["employment", "offer letter"],
+    }
+    for label, keys in filename_keys.items():
+        if any(k in fn for k in keys):
             return label
+    scores = []
+    for label, keys in TYPE_RULES:
+        hits = sum(1 for k in keys if k in t)
+        scores.append((hits, label))
+    scores.sort(reverse=True)
+    if scores and scores[0][0] >= 2:
+        return scores[0][1]
     return "Other"
 
-st.title("📋 Transaction Document Checker")
-st.caption("Real-estate transaction QA screening tool — upload documents, review required fields, and identify items that need attention.")
 
-with st.sidebar:
-    st.header("Transaction")
-    address = st.text_input("Property Address", placeholder="123 Main St, City, State ZIP")
-    buyer = st.text_input("Buyer Name", placeholder="Buyer full name")
-    seller = st.text_input("Seller Name", placeholder="Seller full name")
-    st.divider()
-    st.header("Required Documents")
-    required = []
-    for d in DEFAULT_DOCS:
-        if st.checkbox(d, value=d in ["Purchase Agreement", "Seller Disclosure", "Agency Disclosure"], key="req_"+d):
-            required.append(d)
-    st.divider()
-    st.info("For privacy, this demo processes uploaded files in the running app session and does not intentionally save them to a database. Do not upload real client documents to an unapproved deployment.")
+def value_after_label(text, patterns):
+    low = text.lower()
+    for pattern in patterns:
+        for m in re.finditer(pattern, low, flags=re.I):
+            tail = clean(text[m.end():m.end() + 160])
+            tail = re.sub(r"^[\s:._\-–—|]+", "", tail)
+            if not tail:
+                continue
+            # If OCR/text immediately reaches another field label, the field is probably blank.
+            if re.match(r"^(?:_{2,}|\.{4,}|-{4,})", tail):
+                return ""
+            return tail
+    return ""
+
+
+def field_status(text, field):
+    patterns = FIELD_PATTERNS.get(field, [])
+    if not patterns:
+        return "NOT FOUND"
+    low = text.lower()
+    matches = list(re.finditer("|".join(f"(?:{p})" for p in patterns), low, flags=re.I))
+    if not matches:
+        return "NOT FOUND"
+    for m in matches:
+        tail = clean(text[m.end():m.end() + 160])
+        tail = re.sub(r"^[\s:._\-–—|]+", "", tail)
+        if re.match(r"^(?:_{2,}|\.{4,}|-{4,}|$)", tail):
+            return "MISSING"
+        # Label may be followed by another field label, indicating no value was filled.
+        if re.match(r"^(?:buyer|seller|tenant|landlord|property|address|date|signature|initials|monthly rent|security deposit)\b", tail, re.I):
+            return "MISSING"
+        if len(tail) >= 2:
+            return "FOUND"
+    return "MISSING"
+
+
+def signature_status(text):
+    low = text.lower()
+    if not re.search(r"\bsignature\b|signed\s+by|electronic\s+signature", low):
+        return "NOT FOUND"
+    # Text extraction cannot reliably prove a handwritten/e-signature exists.
+    if re.search(r"signature\s*[:|]?\s*_{3,}|signature\s*[:|]?\s*\.{5,}|signature\s*[:|]?\s*-{5,}", low):
+        return "MISSING"
+    return "REVIEW"
+
+
+def status_for(text, field):
+    return signature_status(text) if field == "Signature" else field_status(text, field)
+
 
 uploads = st.file_uploader(
-    "Upload transaction documents",
-    type=["pdf", "png", "jpg", "jpeg", "tif", "tiff"],
-    accept_multiple_files=True
+    "Upload document(s)",
+    type=["pdf", "docx", "png", "jpg", "jpeg", "tif", "tiff"],
+    accept_multiple_files=True,
+    help="PDF, Word (.docx), and image files are supported.",
 )
 
-if uploads:
-    st.success(f"{len(uploads)} document(s) loaded.")
-    results = []
-    all_text = ""
-    found_types = set()
-
-    for up in uploads:
-        try:
-            pages = extract(up)
-            text = "\n".join(t for _, t in pages)
-            all_text += "\n" + text
-            found_types.add(doc_type(up.name))
-            row = {"Document": up.name, "Type": doc_type(up.name)}
-            for field in FIELD_PATTERNS:
-                states = [field_status(t, field) for _, t in pages]
-                if "FOUND" in states:
-                    row[field] = "FOUND"
-                elif "REVIEW" in states:
-                    row[field] = "REVIEW"
-                elif "MISSING" in states:
-                    row[field] = "MISSING"
-                else:
-                    row[field] = "NOT FOUND"
-            results.append(row)
-        except Exception as e:
-            st.error(f"Could not process {up.name}: {e}")
-
-    st.subheader("📊 Transaction Summary")
-    missing_docs = [d for d in required if d not in found_types]
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Documents Uploaded", len(uploads))
-    c2.metric("Required Documents Missing", len(missing_docs))
-    c3.metric("Fields Requiring Review", sum(
-        1 for r in results for k, v in r.items() if v in ("MISSING", "REVIEW")
-    ))
-
-    if missing_docs:
-        st.error("🔴 Missing required documents: " + ", ".join(missing_docs))
-    else:
-        st.success("🟢 All selected required document types were detected by filename.")
-
-    # Basic cross-document consistency checks
-    st.subheader("🔎 Cross-Document Checks")
-    checks = []
-    if buyer:
-        checks.append(("Buyer name", buyer, buyer.lower() in all_text.lower()))
-    if seller:
-        checks.append(("Seller name", seller, seller.lower() in all_text.lower()))
-    if address:
-        checks.append(("Property address", address, address.lower() in all_text.lower()))
-
-    if checks:
-        for label, value, ok in checks:
-            if ok:
-                st.success(f"🟢 {label}: found in extracted text")
-            else:
-                st.warning(f"🟡 {label}: not found exactly — manually review for formatting/OCR differences")
-    else:
-        st.info("Enter buyer, seller, and/or property address in the sidebar to run exact cross-document checks.")
-
-    st.subheader("📋 Document-Level Results")
-    if results:
-        # Display a compact table without pandas dependency.
-        import pandas as pd
-        df = pd.DataFrame(results)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Download QA Report (CSV)", csv, "transaction_qa_report.csv", "text/csv")
-
-    st.warning("Signature detection is heuristic. Always visually verify signatures, initials, dates, and contractual requirements before marking a transaction complete.")
+if not uploads:
+    st.info("Upload a document to see its type, detected information, and missing items here. No report download is required.")
 else:
-    st.info("Upload one or more PDFs/images to begin.")
+    for up in uploads:
+        with st.container(border=True):
+            try:
+                text = extract(up)
+                dtype = identify_type(up.name, text)
+                fields = DOC_FIELDS.get(dtype, DOC_FIELDS["Other"])
+                statuses = {field: status_for(text, field) for field in fields}
+                missing = [f for f, s in statuses.items() if s == "MISSING"]
+                not_found = [f for f, s in statuses.items() if s == "NOT FOUND"]
+                review = [f for f, s in statuses.items() if s == "REVIEW"]
+
+                st.markdown(f"### 📄 {up.name}")
+                st.write(f"**Identified document:** {dtype}")
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Missing", len(missing))
+                c2.metric("Not detected", len(not_found))
+                c3.metric("Needs review", len(review))
+
+                if missing:
+                    st.error("🔴 Missing: " + ", ".join(missing))
+                if not_found:
+                    st.warning("🟡 Not detected: " + ", ".join(not_found))
+                if review:
+                    st.info("🔎 Needs review: " + ", ".join(review) + " (signature fields require visual verification)")
+                if not missing and not not_found and not review:
+                    st.success("🟢 All applicable items were detected.")
+
+                rows = [{"Item": f, "Status": s} for f, s in statuses.items()]
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+
+                with st.expander("Show extracted text"):
+                    st.text_area("Document text", text[:30000], height=220, key=f"text_{up.name}")
+            except Exception as e:
+                st.error(f"Could not read {up.name}: {e}")
+
+st.caption("Note: This is a screening tool, not a legal/compliance determination. OCR and document interpretation can require human verification.")
